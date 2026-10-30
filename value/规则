@@ -1,0 +1,6 @@
+添加变量规则
+1. 新的底层功能需要新建文件（不要塞进 Vmain.py）
+2. 新增全局变量必须在 Vmain.py 的 Main.__init__ 里声明，并注明由哪个模块负责赋值
+3. 配置项只允许通过 value.config 读取；新增配置项要同时改 Vconfig.py、basic/files.py 默认值、README「三、配置」
+4. 新增的全局对象一律"只组装不连网"：连接/初始化放在 async init/connect，由 main.py 的 lifespan 调用
+5. 插件容器统一挂在 value.plugin（database_business / route），新增插件类型请新建 value/Vxxx.py

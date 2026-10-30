@@ -1,11 +1,13 @@
 # 此文件为主要检查并补全文件
 import os
+import secrets
+
 from dotenv import load_dotenv
-from .test import DB as testDB
-import asyncio
+
+
 ## 检测
 class Test:
-    def __init__(self,logger):
+    def __init__(self, logger):
         """
         初始化测试类
         """
@@ -14,8 +16,8 @@ class Test:
             {"log": ""},
             {"config":
                 [
-                    {"A": [".env.db",".env.redis", ".env.email", ".env.server"]},
-                    {"B": [".env.db",".env.redis", ".env.email", ".env.server"]}
+                    {"A": [".env.db", ".env.redis", ".env.email", ".env.server"]},
+                    {"B": [".env.db", ".env.redis", ".env.email", ".env.server"]}
                 ]
             }
         ]
@@ -56,9 +58,10 @@ class Test:
         except Exception as e:
             self.logger.error(f"检查文件/文件夹时出错: {e}")
 
+
 # 创建
 class Create:
-    def __init__(self, structure, logger,base_path="."):
+    def __init__(self, structure, logger, base_path="."):
         """
         创建文件/文件夹
 
@@ -110,103 +113,180 @@ class Create:
         except Exception as e:
             self.logger.error(f"创建文件/文件夹时出错: {e}")
 
+
 # 读取
 class Read:
-    def __init__(self,logger):
+    """读取配置文件：文件缺失时创建，变量缺失时补默认值，再加载进环境变量"""
+
+    def __init__(self, logger):
         """主要读取配置文件"""
         self.logger = logger
-        self.configList = os.listdir("config")
+        # 配置组目录（A/B/...）
+        self.configList = sorted(
+            i for i in os.listdir("config")
+            if os.path.isdir(os.path.join("config", i))
+        ) if os.path.isdir("config") else []
 
-    # 数据库文件读取至内存中
-    def db(self):
+    # 选择配置组：环境变量 TWSC_CONFIG / SERVER_CONFIG 优先，否则用第一个目录
+    def _group(self):
+        want = (os.getenv("TWSC_CONFIG") or os.getenv("SERVER_CONFIG") or "").strip()
+        if want and want in self.configList:
+            return want
+        if want:
+            self.logger.warning(f"[配置组] {want} 不存在，回退到 {self.configList[0] if self.configList else 'A'}")
+        if not self.configList:
+            self.logger.error("未找到任何配置组目录 config/*")
+            return "A"
+        return self.configList[0]
+
+    # 补全缺失的环境变量（不覆盖已有值）
+    def _ensure(self, path, defaults: dict):
+        """补齐缺失的环境变量项
+
+        Args:
+            path: 配置文件路径
+            defaults: {变量名: 默认值}，只追加文件里没有的键
+        """
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        content = ""
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                content = f.read()
+        exists = {
+            line.split("=", 1)[0].strip()
+            for line in content.splitlines()
+            if "=" in line and not line.strip().startswith("#")
+        }
+        missing = [(k, v) for k, v in defaults.items() if k not in exists]
+        if not missing:
+            return
+        with open(path, "a", encoding="utf-8") as f:
+            if content and not content.endswith("\n"):
+                f.write("\n")
+            for key, default in missing:
+                f.write(f"{key}={default}\n")
+        self.logger.debug(f"[补全配置] {path}: {', '.join(k for k, _ in missing)}")
+
+    def _load(self, path):
+        """加载环境文件；系统环境变量优先，便于容器化部署覆盖"""
+        load_dotenv(path, override=False)
+        self.logger.info(f"[加载配置] {path}")
+
+    # 数据库配置默认值
+    def _defaults_db(self):
+        return {
+            "DB_ENGINE": "mysql",
+            "DB_HOST": "127.0.0.1",
+            "DB_PORT": "3306",
+            "DB_USER": "root",
+            "DB_PASSWORD": "''",
+            "DB_DB": "twsc",
+            "DB_CHARSET": "utf8mb4",
+            "DB_MAXSIZE": "10",
+            "DB_MININSIZE": "2",
+        }
+
+    # 数据库文件读取
+    def db(self, group):
         """读取数据库配置"""
-        for i in self.configList:
-            self.logger.info(f"开始检测数据库 {i} 组配置")
-            name = f"config/{i}/.env.db"
-            if not os.path.exists(name) or os.path.getsize(name) == 0:
-                self.logger.debug(f"[空文件] {name} 将写入默认配置...")
-                # 写入默认配置
-                with open(name, "w", encoding="utf-8") as f:
-                    f.write("DB_HOST=127.0.0.1\n"
-                            "DB_PORT=3306\n"
-                            "DB_USER=root\n"
-                            "DB_PASSWORD=''\n"
-                            "DB_DB=twac\n"
-                            "DB_CHARSET=utf8mb4\n"
-                            "DB_MAXSIZE=10\n"
-                            "DB_MININSIZE=2\n")
-            # 加载
-            load_dotenv(name, override=True)
-            # 检测数据库连接
-            success, msg = asyncio.run(testDB(self.logger).main())
-            if success:
-                self.logger.info(f"数据库 {i} 组连接成功! 数据库版本: {msg[0]}")
-                break
-            else:
-                self.logger.error(f"数据库 {i} 组连接失败: {msg}")
+        name = f"config/{group}/.env.db"
+        self.logger.info(f"开始检测数据库配置组 {group}")
+        self._ensure(name, self._defaults_db())
+        self._load(name)
+
+    # 缓存配置默认值
+    def _defaults_redis(self):
+        return {
+            "REDIS_ENABLED": "True",
+            "REDIS_HOST": "127.0.0.1",
+            "REDIS_PORT": "6379",
+            "REDIS_PASSWORD": "''",
+            "REDIS_DB": "0",
+            "REDIS_MAXSIZE": "5",
+            "REDIS_TIMEOUT": "5",
+        }
 
     # 缓存读取
-    def Redis(self):
-        for i in self.configList:
-            self.logger.info(f"开始检测缓存 {i} 组配置")
-            name = f"config/{i}/.env.redis"
-            if not os.path.exists(name) or os.path.getsize(name) == 0:
-                self.logger.debug(f"[空文件] {name} 将写入默认配置...")
-                # 写入默认配置
-                with open(name, "w", encoding="utf-8") as f:
-                    f.write("REDIS_HOST=127.0.0.1\n"  # IP
-                            "REDIS_PORT=6379\n"     # 端口
-                            "REDIS_PASSWORD=''\n"  # 密码
-                            "REDIS_DB=0\n"          # 数据库
-                            )
-            # 加载
-            load_dotenv(name, override=True)
+    def Redis(self, group):
+        """读取缓存配置（连接在服务启动时进行，失败自动降级内存缓存）"""
+        name = f"config/{group}/.env.redis"
+        self.logger.info(f"开始检测缓存配置组 {group}")
+        self._ensure(name, self._defaults_redis())
+        self._load(name)
+
+    # 邮箱配置默认值
+    def _defaults_email(self):
+        return {
+            "EMAIL_USER": "''",
+            "EMAIL_PASSWORD": "''",
+        }
 
     # 邮箱
-    def email(self,config):
+    def email(self, group):
         """读取邮箱配置"""
-        if os.getenv("SERVER_EMAIL") == "False":
+        if os.getenv("SERVER_EMAIL", "False").strip().lower() not in ("1", "true", "yes", "y", "on"):
             self.logger.warning("[跳过邮箱配置] SERVER_EMAIL 未启用")
             return
-        name = f"config/{config}/.env.email"
-        if not os.path.exists(name) or os.path.getsize(name) == 0:
-            self.logger.debug(f"[空文件] {name} 将写入默认配置...")
-            # 写入默认配置
-            with open(name, "w", encoding="utf-8") as f:
-                f.write("EMAIL_USER=root\n"  # 邮箱用户名
-                        "EMAIL_PASSWORD=123456\n") # 邮箱密码
+        name = f"config/{group}/.env.email"
+        self._ensure(name, self._defaults_email())
+        self._load(name)
 
-        # 加载
-        load_dotenv(name, override=True)
-        self.logger.info(f"[加载邮箱配置] {name}")
+    # 服务器配置默认值
+    def _defaults_server(self, group):
+        return {
+            "SERVER_IP": "127.0.0.1",
+            "SERVER_PORT": "8000",
+            "SERVER_DEBUG": "True",
+            "SERVER_EMAIL": "False",
+            "SERVER_CONFIG": group,
+            "SERVER_SECRET": "",
+            "SERVER_LOGIN_VALIDITY": "1440",
+            "SERVER_REGISTER": "False",
+            "SERVER_ADMIN_USER": "root",
+            "SERVER_ADMIN_PASSWORD": "",
+            "SERVER_CORS": "",
+            "SERVER_TRUSTED_PROXIES": "",
+            "SERVER_BASE_URL": "",
+            "SERVER_COOKIE_SECURE": "",
+            "SERVER_SSL": "False",
+            "SERVER_SSL_CERT": "./key/cert.pem",
+            "SERVER_SSL_KEY": "./key/key.pem",
+        }
 
-    # 服务器配置
-    def server(self,config):
-        """读取服务器配置"""
-        name = f"config/{config}/.env.server"
-        if not os.path.exists(name) or os.path.getsize(name) == 0:
-            self.logger.debug(f"[空文件] {name} 将写入默认配置...")
-            # 写入默认配置
-            with open(name, "w", encoding="utf-8") as f:
-                f.write("SERVER_IP=127.0.0.1\n"  # IP
-                        "SERVER_PORT=8000\n"     # 端口
-                        "SERVER_DEBUG=True\n"    # debug模式 
-                        "SERVER_EMAIL=False\n")  # 是否使用邮箱
-        # 加载
-        load_dotenv(name, override=True)
-        self.logger.info(f"[加载服务器配置] {name}")
+    # 服务端配置
+    def server(self, group):
+        """读取服务器配置，并补全饼干签名密钥"""
+        name = f"config/{group}/.env.server"
+        self._ensure(name, self._defaults_server(group))
+        self._load(name)
+        # 饼干签名密钥：为空时生成并写回配置文件，保证重启后登录态不失效
+        if not os.getenv("SERVER_SECRET", "").strip():
+            secret = secrets.token_hex(32)
+            with open(name, "r", encoding="utf-8") as f:
+                content = f.read()
+            with open(name, "a", encoding="utf-8") as f:
+                if content and not content.endswith("\n"):
+                    f.write("\n")
+                f.write(f"SERVER_SECRET={secret}\n")
+            os.environ["SERVER_SECRET"] = secret
+            self.logger.info("[补全配置] 已生成新的饼干签名密钥 SERVER_SECRET")
+        os.environ["SERVER_CONFIG"] = group
 
     def main(self):
-        self.logger.info(f"开始读取配置文件,配置组为：{self.configList[0]}")
-        self.db()
-        self.server(self.configList[0])  # 先加载服务器配置
-        self.email(self.configList[0])  # 再加载邮箱配置（依赖服务器配置）
+        group = self._group()
+        self.logger.info(f"开始读取配置文件，配置组为：{group}")
+        self.server(group)  # 先加载服务器配置（下面的开关依赖它）
+        self.db(group)
+        self.Redis(group)
+        self.email(group)   # 最后加载邮箱配置
+
 
 class Main:
-    def __init__(self,logger):
+    def __init__(self, logger):
         t = Test(logger)
-        Create(t.files,logger).run()
+        Create(t.files, logger).run()
         Read(logger).main()
+
 
 if __name__ == "__main__":
     # 使用示例

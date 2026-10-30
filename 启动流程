@@ -1,0 +1,36 @@
+# 启动流程
+
+1. 初始化（同步，main.py 导入时执行）
+   配置日志（loguru：控制台 + 按天切分文件）
+   |
+   启动兼容性检测（系统/内核/Python 版本/内存）
+   |
+   检查并补全文件与配置组（config/<组>/.env.*，缺失变量补默认值、缺失密钥自动生成）
+   |
+   解析配置 value.config（环境变量优先于配置文件）
+   |
+   初始化邮箱（SERVER_EMAIL=True 且账号齐全时）
+   |
+   组装缓存服务 / 数据库管理器 / 认证总控（只创建对象，不连接）
+   |
+   创建 FastAPI 应用（lifespan、CORS、请求中间件、静态/模板）
+   |
+   挂载路由（transaction/routing.py：index / auth / admin）
+
+2. 服务启动（异步，uvicorn lifespan 的 startup）
+   连接 Redis（失败自动降级进程内缓存）
+   |
+   连接 MySQL（自动建库/建表/补字段）
+   |
+   加载数据库业务插件（plugin/database_business）
+   |
+   初始化认证（饼干签名密钥、会话存储）
+   |
+   引导超级管理员（不存在时交互式创建；非交互环境随机生成并写日志）
+
+3. 运行
+   对外提供 JSON API：/、/health、/auth/*、/admin/*
+   定时/按需：配置重载（value.reload_config，只重读配置）
+
+4. 关闭（lifespan 的 shutdown，另有 atexit/信号兜底）
+   关闭数据库连接池 -> 关闭缓存连接 -> 记录运行时长
