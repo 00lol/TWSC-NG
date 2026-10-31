@@ -27,6 +27,18 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .auth import Security, get_client_ip, parse_trusted_proxies, set_trusted_proxies
+from .console import (
+    ApiError,
+    CODE_ADMIN_UNAUTH,
+    CODE_CONFLICT,
+    CODE_FORBIDDEN,
+    CODE_NOT_FOUND,
+    CODE_PARAM,
+    CODE_SERVER,
+    envelope,
+    error_response as console_error_response,
+    set_trace_id,
+)
 
 # 不参与 CSRF 校验的路径（登录/注册本身无会话，健康检查与文档不改变状态）
 CSRF_EXEMPT_PATHS = {
@@ -36,6 +48,23 @@ CSRF_EXEMPT_PATHS = {
     "/docs",
     "/openapi.json",
     "/redoc",
+}
+
+# 管理台路径前缀：Bearer 鉴权，不走 Cookie/CSRF，错误响应用管理台外壳
+CONSOLE_PREFIX = "/admin"
+
+# HTTP 状态码 -> 管理台错误码
+CONSOLE_STATUS_CODE = {
+    400: CODE_PARAM,
+    401: CODE_ADMIN_UNAUTH,
+    403: CODE_FORBIDDEN,
+    404: CODE_NOT_FOUND,
+    405: CODE_NOT_FOUND,
+    409: CODE_CONFLICT,
+    413: CODE_PARAM,
+    422: CODE_PARAM,
+    500: CODE_SERVER,
+    503: CODE_SERVER,
 }
 
 # 需要 CSRF 校验的请求方法
@@ -123,17 +152,39 @@ class Middleware:
         status_code: int,
         message: Any,
         headers: Optional[dict] = None,
+        request: Optional[Request] = None,
     ) -> JSONResponse:
-        """统一失败响应体"""
+        """统一失败响应体（管理台 /admin/* 用 {code,message,data,traceId} 外壳）"""
         try:
             code = int(status_code)
         except (TypeError, ValueError):
             code = 500
+
+        # 管理台：转换为契约错误码
+        if request is not None and self._is_console(request):
+            return JSONResponse(
+                status_code=code,
+                content=envelope(
+                    None,
+                    self._message(message),
+                    CONSOLE_STATUS_CODE.get(code, CODE_SERVER),
+                ),
+                headers=headers,
+            )
+
         return JSONResponse(
             status_code=code,
             content={"success": False, "message": self._message(message), "code": code},
             headers=headers,
         )
+
+    def _is_console(self, request: Request) -> bool:
+        """是否管理台接口（/admin 前缀，忽略 base_url）"""
+        try:
+            path = self._normalize_path(request.url.path)
+        except Exception:
+            return False
+        return path == CONSOLE_PREFIX or path.startswith(CONSOLE_PREFIX + "/")
 
     def _finish(self, response, request: Request, start: float, request_id: str, ip: str):
         """统一的响应收尾：安全头 + 访问日志"""
@@ -143,6 +194,7 @@ class Middleware:
             headers.setdefault("X-Frame-Options", "DENY")
             headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
             headers.setdefault("X-Request-ID", request_id)
+            headers.setdefault("X-Trace-Id", request_id)
             if self.ssl:
                 headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 
@@ -180,8 +232,11 @@ class Middleware:
         request_id = uuid.uuid4().hex[:16]
         state = request.state
         state.request_id = request_id
+        state.trace_id = request_id
         state.start_time = start
         state.user = None
+        # 管理台响应包需要 traceId，写进上下文变量
+        set_trace_id(request_id)
 
         # 真实 IP
         ip = "未知"
@@ -211,9 +266,11 @@ class Middleware:
             except Exception:
                 pass
 
-        # CSRF 双提交校验（白名单放行；没有 CSRF Cookie 时放行给路由自己判 401）
-        if request.method.upper() in UNSAFE_METHODS and not self._csrf_exempt(
-            self._normalize_path(request.url.path)
+        # CSRF 双提交校验（白名单放行；管理台走 Bearer 不适用；没有 CSRF Cookie 时放行给路由自己判 401）
+        if (
+            request.method.upper() in UNSAFE_METHODS
+            and not self._is_console(request)
+            and not self._csrf_exempt(self._normalize_path(request.url.path))
         ):
             try:
                 cookie_token = request.cookies.get(Security.CSRF_COOKIE_NAME)
@@ -241,6 +298,8 @@ class Middleware:
         # 调用下游路由（异常兜底）
         try:
             response = await call_next(request)
+        except ApiError as exc:
+            response = console_error_response(exc)
         except HTTPException as exc:
             response = self._error_response(
                 getattr(exc, "status_code", 500), getattr(exc, "detail", "请求失败"),
@@ -282,6 +341,7 @@ class Middleware:
             getattr(exc, "status_code", 500),
             getattr(exc, "detail", "请求失败"),
             getattr(exc, "headers", None),
+            request=request,
         )
 
     async def _handle_validation_exception(self, request: Request, exc: RequestValidationError):
@@ -290,7 +350,9 @@ class Middleware:
             self.logger.debug(f"[{request_id}] 请求参数校验失败: {exc.errors()}")
         except Exception:
             pass
-        return self._error_response(422, "请求参数校验失败")
+        # 管理台契约：参数不合法 = 400 / 1001；其他接口保持 422
+        status_code = 400 if self._is_console(request) else 422
+        return self._error_response(status_code, "参数不合法", request=request)
 
     # ------------------------------------------------------------------ #
     # 注册入口

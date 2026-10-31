@@ -52,6 +52,8 @@ class FastAPIWebApp:
         )
         # 立刻回写全局 value，中间件/路由都从 value.app 取应用实例
         self.value.app = self.app
+        # 管理台插件等通过 request.app.state.value 取全局对象
+        self.app.state.value = self.value
 
         # 请求中间件（访问日志、会话装载、CSRF、异常兜底）先注册
         self._setup_middleware()
@@ -191,23 +193,25 @@ class FastAPIWebApp:
 
         # CORS 配置 —— 不允许 "*" 同时携带 credentials（规范禁止的组合）
         allow_origins = self.server.get("cors") or self._default_cors_origins()
+        allow_headers = ["Content-Type", "Authorization", "Idempotency-Key", "X-CSRF-Token"]
+        allow_methods = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
         if allow_origins and "*" not in allow_origins:
             # 显式配置了具体来源时允许凭据（饼干登录需要）
             self.app.add_middleware(
                 CORSMiddleware,
                 allow_origins=allow_origins,
                 allow_credentials=True,
-                allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+                allow_methods=allow_methods,
                 allow_headers=["*"],
             )
         else:
-            # 默认严格策略：不允许跨源带凭据
+            # 默认严格策略：不允许跨源带凭据（管理台用 Bearer，不受影响）
             self.app.add_middleware(
                 CORSMiddleware,
                 allow_origins=["*"] if not allow_origins else allow_origins,
                 allow_credentials=False,
-                allow_methods=["GET", "POST", "OPTIONS"],
-                allow_headers=["Content-Type"],
+                allow_methods=allow_methods,
+                allow_headers=allow_headers,
             )
 
     # 初始化服务器

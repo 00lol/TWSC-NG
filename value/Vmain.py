@@ -35,6 +35,8 @@ class Main:
         self.system = {}
         # 插件（{"插件名": 插件实例}）
         self.plugin = self.Plugin()
+        # 跨模块钩子：插件注册能力给框架用（如 console_audit 审计落库）
+        self.hooks = {}
         # lifespan 钩子，由 main.py 注入，basic/web.py 调用
         self.startup = None
         self.shutdown = None

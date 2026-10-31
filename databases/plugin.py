@@ -53,9 +53,14 @@ class Plugin:
 
 
 class DatabasePlugin(Plugin):
-    """数据库业务插件基类 —— 子类只写业务方法，自动获得数据库连接"""
+    """数据库业务插件基类 —— 子类只写业务方法，自动获得数据库连接
+
+    可选类属性 ``prefix``：路由挂载前缀。缺省时 main.py 挂到
+    ``{base_url}/plugin/<插件名>``；管理台业务插件统一写 ``prefix = "/admin"``。
+    """
 
     plugin_type = "database_business"
+    prefix = None
 
     def __init__(self, name: str, description: str):
         super().__init__(name, description, plugin_type=self.plugin_type)

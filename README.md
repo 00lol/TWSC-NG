@@ -50,7 +50,7 @@ TWSC-NG/
 │   └── routes/
 │       ├── index.py            # /、/health
 │       ├── auth.py             # /auth/*：登录、登出、注册、当前用户、改密、邮箱验证码
-│       └── admin.py            # /admin/*：后台认证（只有 API，没有界面）
+│       └── admin.py            # /system/*：框架自带的 Cookie 后台认证（只有 API，没有界面）
 └── log/                        # 日志输出
 ```
 
@@ -85,7 +85,7 @@ python main.py
 
 | 文件 | 变量 |
 | --- | --- |
-| `.env.server` | `SERVER_IP` `SERVER_PORT` `SERVER_DEBUG` `SERVER_EMAIL` `SERVER_CONFIG` `SERVER_SECRET` `SERVER_LOGIN_VALIDITY` `SERVER_REGISTER` `SERVER_ADMIN_USER` `SERVER_ADMIN_PASSWORD` `SERVER_CORS` `SERVER_TRUSTED_PROXIES` `SERVER_COOKIE_SECURE` `SERVER_SSL` `SERVER_SSL_CERT` `SERVER_SSL_KEY` |
+| `.env.server` | `SERVER_IP` `SERVER_PORT` `SERVER_DEBUG` `SERVER_EMAIL` `SERVER_CONFIG` `SERVER_SECRET` `SERVER_LOGIN_VALIDITY` `SERVER_REGISTER` `SERVER_ADMIN_USER` `SERVER_ADMIN_PASSWORD` `SERVER_CORS` `SERVER_TRUSTED_PROXIES` `SERVER_COOKIE_SECURE` `SERVER_CONSOLE_TOKEN_HOURS` `SERVER_CONSOLE_SEED` `SERVER_CONSOLE_ADMIN_USER` `SERVER_CONSOLE_ADMIN_PASSWORD` `SERVER_SSL` `SERVER_SSL_CERT` `SERVER_SSL_KEY` |
 | `.env.db` | `DB_ENGINE` `DB_HOST` `DB_PORT` `DB_USER` `DB_PASSWORD` `DB_DB` `DB_CHARSET` `DB_MAXSIZE` `DB_MININSIZE` |
 | `.env.redis` | `REDIS_ENABLED` `REDIS_HOST` `REDIS_PORT` `REDIS_PASSWORD` `REDIS_DB` `REDIS_MAXSIZE` `REDIS_TIMEOUT` |
 | `.env.email` | `EMAIL_USER` `EMAIL_PASSWORD` |
@@ -271,12 +271,14 @@ class Middleware:
 | POST | `/auth/register` | 注册（`SERVER_REGISTER=True`） | 否 |
 | POST | `/auth/password` | 修改密码 | 是 |
 | POST | `/auth/email/code` | 发送邮箱验证码（需 `SERVER_EMAIL=True`） | 否 |
-| GET | `/admin/ping` | 后台认证探针 | ≥管理员 |
-| GET | `/admin/whoami` | 后台身份 | ≥管理员 |
-| GET | `/admin/users` | 用户列表 | 超级管理员 |
-| POST | `/admin/users` | 新增用户 | 超级管理员 |
-| POST | `/admin/users/{id}/active` | 启用/禁用 | 超级管理员 |
-| POST | `/admin/users/{id}/level` | 调整等级 | 超级管理员 |
+| GET | `/system/ping` | 后台认证探针 | ≥管理员 |
+| GET | `/system/whoami` | 后台身份 | ≥管理员 |
+| GET | `/system/users` | 用户列表 | 超级管理员 |
+| POST | `/system/users` | 新增用户 | 超级管理员 |
+| POST | `/system/users/{id}/active` | 启用/禁用 | 超级管理员 |
+| POST | `/system/users/{id}/level` | 调整等级 | 超级管理员 |
+
+> `/admin/*` 已整体交给管理台业务插件（见第九节），框架自带的 Cookie 后台接口统一在 `/system/*`。
 
 所有路由前缀带 `value.config["server"]["base_url"]`（默认空）。
 
@@ -320,13 +322,13 @@ curl -i -c cookies.txt -X POST http://127.0.0.1:8000/auth/login \
 CSRF=$(grep twsc_csrf cookies.txt | awk '{print $7}')
 curl -b cookies.txt -X POST http://127.0.0.1:8000/auth/logout -H "X-CSRF-Token: $CSRF"
 curl -b cookies.txt http://127.0.0.1:8000/auth/me
-curl -b cookies.txt http://127.0.0.1:8000/admin/users -H "X-CSRF-Token: $CSRF"
+curl -b cookies.txt http://127.0.0.1:8000/system/users -H "X-CSRF-Token: $CSRF"
 ```
 
 后台新增用户（仅超级管理员）：
 
 ```bash
-curl -b cookies.txt -X POST http://127.0.0.1:8000/admin/users \
+curl -b cookies.txt -X POST http://127.0.0.1:8000/system/users \
   -H "Content-Type: application/json" -H "X-CSRF-Token: $CSRF" \
   -d '{"username":"operator","password":"Operator_123","level":-100}'
 ```
@@ -340,7 +342,7 @@ curl -b cookies.txt -X POST http://127.0.0.1:8000/admin/users \
 | 启动链路 | `main.py` / `basic/web.py` | MySQL 8.0.46 实机启动：lifespan 连接、自动建库建表、加载 1 个业务插件、`/health`=200、CTRL_BREAK 优雅关闭 |
 | 认证（饼干） | `transaction/auth.py` | 登录/登出/`/auth/me`/CSRF 403/权限 403/改密后旧会话失效，35 项端到端断言全通过 |
 | 中间件 | `transaction/middleware.py` | 请求 ID、访问日志、安全响应头、统一 JSON 错误（401/403/404/422/503）、CSRF 双提交 |
-| 路由 | `transaction/routes/*` | `/`、`/health`、`/auth/*`（6 个）、`/admin/*`（6 个）；后台认证无界面可用 |
+| 路由 | `transaction/routes/*` | `/`、`/health`、`/auth/*`（6 个 Cookie 认证）、`/system/*`（6 个框架后台）；`/admin/*` 归管理台业务插件 |
 | 数据库 | `databases/*` | users 表 14 字段自动创建、超级管理员 `role_level=-128`、pbkdf2 哈希、登录 IP 落库；驱动/建表/补字段/用户操作 86 项断言 |
 | 插件体系 | `databases/plugin.py` / `plugin/` | 目录扫描、`example_business` 加载并注入数据库、`register_routes` 预留 |
 | 缓存 | `cache/*` | 本机无 Redis → 自动降级内存缓存；自研异步 RESP2 客户端用假 Redis 验证 GET/SET/数组/错误回复/断线重连/连接池并发，90 项断言 |
@@ -348,3 +350,60 @@ curl -b cookies.txt -X POST http://127.0.0.1:8000/admin/users \
 | 调试模式 | `basic/web.py` | `SERVER_DEBUG=True` 时 uvicorn 热重载（`main:app`）可正常启动并响应 |
 
 验证覆盖 35（HTTP 端到端）+ 12（边界场景）+ 90（缓存）+ 86（数据库）+ 142（事务层）项断言，全部通过。
+
+## 九、管理台后端（`/admin/*`，61 条接口）
+
+对接前端 Vue 3 管理台（14 个页面）。接口契约见
+[`docs/后端实现约定.md`](docs/后端实现约定.md)（内部实现约定）与前端仓库的
+`API-接口清单.md`（字段/错误码权威来源）。
+
+### 9.1 与框架内 `/auth/*` 的区别
+
+| 项 | `/auth/*`（框架自带） | `/admin/*`（管理台） |
+| --- | --- | --- |
+| 认证 | Cookie 会话 + CSRF 双提交 | `Authorization: Bearer <token>`（12h） |
+| 角色 | `role_level`（-128/-100/0） | `super` / `op` / `developer`（developer 只读） |
+| 响应包 | `{success,message,data}` | `{code,message,data,traceId}` |
+| 账号表 | `users`（框架用户） | `console_admins`（管理台账号，独立） |
+
+两套互不影响：中间件按路径前缀分流错误外壳，管理台不走 CSRF。
+
+### 9.2 业务插件
+
+| 插件 | 负责接口 | 表 |
+| --- | --- | --- |
+| `console_auth` | 登录/注册/登出/me、白名单、账号、操作日志（15） | console_admins / console_whitelist / console_audit_logs |
+| `console_users` | 用户列表/详情/审核/封禁、认证队列（5） | platform_users / pilot_profiles / client_profiles / verify_records / demands |
+| `console_orders` | 订单列表/详情 + 7 个状态机操作（9） | orders / order_timeline / order_reports / order_payments / order_deliverables … |
+| `console_content` | 作品/评论/举报/频道（9） | works / comments / content_reports / console_channels |
+| `console_activities` | 活动/系统消息（12） | activities / notices |
+| `console_report` | 数据报备/CSV/指标快照（4+1） | console_report_snapshots |
+| `console_ops` | 看板/参数/对接配置（10） | console_params / console_param_history / console_integrations |
+
+插件通过 `DatabasePlugin.prefix = "/admin"` 挂载；`main.py` 在 lifespan 里数据库就绪后统一挂载。
+
+### 9.3 演示数据与联调
+
+```powershell
+# 首次启动自动建表 + 灌演示数据（3 个管理员、35 用户、6 订单、7 作品、活动/消息/参数/对接/日志）
+$env:TWSC_CONFIG="B"; $env:DB_DB="twsc_ng_test"; $env:SERVER_DEBUG="False"; $env:SERVER_CONSOLE_SEED="True"
+.\.venv\Scripts\python.exe main.py
+
+# 管理台账号
+#   方式一（推荐，有全量演示数据）：SERVER_CONSOLE_SEED=True，账号见 databases/seed.py
+#     admin_super / Admin@12345   （super）
+#     op_demo     / Op@12345      （op）
+#     dev_demo    / Dev@12345     （developer，只读）
+#   方式二：不开 seed 也能登录——首次启动若 console_admins 为空，会自动创建超级管理员：
+#     调试模式（SERVER_DEBUG=True）密码固定为 Admin@12345；
+#     生产模式随机生成并打印在启动日志里（可用 SERVER_CONSOLE_ADMIN_USER/PASSWORD 指定）
+
+# 前端：VITE_API_BASE= 留空（同源代理），VITE_PROXY_TARGET=http://127.0.0.1:8000
+# 冒烟测试（61 条接口逐条打）：
+.\.venv\Scripts\python.exe tests\console_smoke.py http://127.0.0.1:8000
+```
+
+- `/docs` 可直接看到全部 `/admin/*` 接口的 Swagger；
+- `/admin/reports` 做了**双实现**：带 `period/from/to` 走数据报备，否则返回举报列表
+  （前端现状零改动即可；规范路径同时提供 `/admin/report-data`）；
+- CSV 导出带 UTF-8 BOM 与 `Content-Disposition`，前端原生 fetch + Bearer 下载即可。

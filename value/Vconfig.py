@@ -70,6 +70,11 @@ class Config:
             "register": _bool("SERVER_REGISTER", False),
             "admin_user": _text("SERVER_ADMIN_USER", "root"),
             "admin_password": _str("SERVER_ADMIN_PASSWORD", ""),
+            # 管理台（/admin/*）：Bearer 令牌有效期、演示数据开关、首次启动管理员
+            "console_token_hours": max(1, _int("SERVER_CONSOLE_TOKEN_HOURS", 12)),
+            "console_seed": _bool("SERVER_CONSOLE_SEED", False),
+            "console_admin_user": _text("SERVER_CONSOLE_ADMIN_USER", "admin_super"),
+            "console_admin_password": _str("SERVER_CONSOLE_ADMIN_PASSWORD", ""),
             "cors": cors,
             "trusted_proxies": [
                 i.strip() for i in _text("SERVER_TRUSTED_PROXIES").split(",") if i.strip()

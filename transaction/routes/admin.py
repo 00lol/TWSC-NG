@@ -103,7 +103,11 @@ def _public_user(record: Any) -> dict:
 
 
 class Admin:
-    """后台认证路由类（prefix = {base_url}/admin）"""
+    """后台认证路由类（prefix = {base_url}/system）
+
+    注意：``/admin/*`` 已交给管理台业务插件（Bearer 令牌 + 管理台响应包），
+    这里保留框架自带的 Cookie 认证后台接口，统一挂到 ``/system/*`` 避免路由遮蔽。
+    """
 
     def __init__(self, value):
         if value is None:
@@ -113,7 +117,7 @@ class Admin:
         if self.logger is None:
             raise ValueError("Admin 路由初始化失败：value.logger 未初始化")
         self.base_url = get_base_url(value)
-        self.router = APIRouter(prefix=f"{self.base_url}/admin", tags=["后台认证"])
+        self.router = APIRouter(prefix=f"{self.base_url}/system", tags=["后台认证"])
         self._route()
 
     # ------------------------------------------------------------------ #

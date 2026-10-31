@@ -17,6 +17,7 @@ import cache
 import databases
 import transaction
 import value
+from transaction import console as console_api
 
 # 全局对象（模块级：uvicorn 热重载会用 "main:app" 重新导入本模块）
 Value = value.Main()
@@ -74,7 +75,13 @@ def _assemble():
     WebApp = basic.FastAPIWebApp(Value)
     Value.app = WebApp.Init()
 
-    # 8. 路由挂载
+    # 7.1 管理台统一异常外壳（/admin/* 的 ApiError -> {code,message,data,traceId}）
+    try:
+        console_api.install_handlers(Value.app)
+    except Exception as e:
+        Value.logger.error(f"注册管理台异常处理器失败: {e}")
+
+    # 8. 路由挂载（基础路由；业务插件路由在 lifespan 里数据库就绪后挂载）
     transaction.Routing(Value)
 
     # 9. 生命周期钩子与配置重载
@@ -82,6 +89,54 @@ def _assemble():
     Value.shutdown = shutdown
     Value.reload_config = reload_config
     return WebApp
+
+
+def _mount_plugin_routes():
+    """把业务插件的路由挂到应用上（在 lifespan 里、数据库就绪后调用）
+
+    插件通过类属性 ``prefix`` 指定挂载前缀；管理台插件统一 ``/admin``。
+    """
+    logger = Value.logger
+    plugins = getattr(getattr(Value, "plugin", None), "database_business", None) or {}
+    if not plugins:
+        logger.warning("没有已加载的业务插件，跳过插件路由挂载")
+        return
+    from fastapi import APIRouter
+
+    base = ((Value.config.get("server", {}) or {}).get("base_url") or "").rstrip("/")
+    mounted = 0
+    for name, plugin in plugins.items():
+        try:
+            raw_prefix = getattr(plugin, "prefix", None)
+            prefix = f"{base}{raw_prefix}" if raw_prefix else f"{base}/plugin/{name}"
+            router = APIRouter(prefix=prefix, tags=[f"插件·{name}"])
+            plugin.register_routes(router)
+            routes = list(getattr(router, "routes", []) or [])
+            if not routes:
+                logger.debug(f"插件 [{name}] 未提供 HTTP 路由")
+                continue
+            Value.app.include_router(router)
+            Value.routes[name] = router
+            mounted += 1
+            logger.info(f"插件 [{name}] 路由已注册 -> {prefix}（{len(routes)} 条）")
+        except Exception as e:
+            logger.error(f"插件 [{name}] 注册路由失败: {e}")
+    logger.info(f"业务插件路由挂载完成：{mounted} 个插件")
+
+
+async def _maybe_seed():
+    """按配置灌入管理台演示数据（仅首次；见 SERVER_CONSOLE_SEED）"""
+    server = Value.config.get("server", {}) or {}
+    if not server.get("console_seed"):
+        return
+    try:
+        from databases.seed import run as run_seed
+        if await run_seed(Value):
+            Value.logger.info("管理台演示数据已就绪（admin_super / Admin@12345）")
+        else:
+            Value.logger.info("演示数据已存在，跳过灌入")
+    except Exception as e:
+        Value.logger.error(f"灌入演示数据失败（不影响服务）: {e}")
 
 
 async def startup():
@@ -99,6 +154,11 @@ async def startup():
         db_ok = await Value.database.init()
         if not db_ok:
             logger.warning("数据库不可用：用户认证与后台接口将返回 503")
+
+    # 业务插件路由：插件在 database.init() 里加载，此时数据库已就绪
+    if db_ok:
+        _mount_plugin_routes()
+        await _maybe_seed()
 
     # 认证：密钥、饼干签名器、会话存储
     if Value.security is not None:
@@ -130,14 +190,19 @@ async def _bootstrap_admin():
 
     if not password:
         if interactive:
-            logger.info("数据库中未找到初始用户，即将设置....")
-            name = input(f"请设置超级管理员账号：(默认{username})>>>").strip()
-            if name:
-                username = name
-            rand = os.urandom(10).hex()
-            answer = input(f"随机密码为：[{rand}],是否同意？(同意：回车/不同意：输入新的密码)>>>").strip()
-            password = answer or rand
-        else:
+            try:
+                logger.info("数据库中未找到初始用户，即将设置....")
+                name = input(f"请设置超级管理员账号：(默认{username})>>>").strip()
+                if name:
+                    username = name
+                rand = os.urandom(10).hex()
+                answer = input(f"随机密码为：[{rand}],是否同意？(同意：回车/不同意：输入新的密码)>>>").strip()
+                password = answer or rand
+            except (EOFError, KeyboardInterrupt):
+                # 某些「伪终端」环境 isatty 为真但读不到输入，退回自动生成
+                logger.warning("交互式输入不可用，改为自动生成超级管理员密码")
+                password = ""
+        if not password:
             # 非交互式环境（容器/后台运行）不能卡在 input 上
             password = os.urandom(8).hex()
             logger.warning(f"非交互式环境，已生成超级管理员：{username} / {password} （请登录后立即修改密码）")
