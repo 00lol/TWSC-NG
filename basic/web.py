@@ -44,8 +44,8 @@ class FastAPIWebApp:
             version="0.0.1",
             # 作者
             contact={
-                "author": "SkyHat",
-                "copyright": "©Copyright 2025 SkyHat. All rights reserved.",
+                "author": "SkyMaoZi",
+                "copyright": "©Copyright 2026 SkyMaoZi. All rights reserved.",
                 "email": "dqj13115716883@163.com",
             },
             lifespan=self._lifespan,
